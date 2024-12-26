@@ -76,8 +76,6 @@ class Task(BaseModel):
 
 class ManagerAgent:
     """Core Manager Agent that orchestrates the AI learning system"""
-    # Add these methods to the ManagerAgent class
-
     def _validate_task(self, task: Task) -> None:
         """Validate task parameters before processing."""
         if not task.id:
@@ -97,7 +95,7 @@ class ManagerAgent:
             else:
                 # Default to conversational prompt
                 return {
-                    "prompt": prompt,
+                    "prompt": f"[INST] {prompt} [/INST]",
                     "generation_params": {
                         "max_new_tokens": 1024,
                         "temperature": 0.7,
@@ -105,6 +103,7 @@ class ManagerAgent:
                     }
                 }
         except Exception as e:
+            logger.error(f"Prompt processing error: {str(e)}")
             raise InvalidPromptError(f"Failed to process prompt: {str(e)}")
 
     @asynccontextmanager

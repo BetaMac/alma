@@ -24,32 +24,24 @@ class PromptConfig:
     TEMPLATES = {
         PromptType.CREATIVE: PromptTemplate(
             type=PromptType.CREATIVE,
-            template="[INST] Create {format} about {subject}. Focus on {aspect}. {additional_context} [/INST]",
-            max_tokens=256,
+            template="[INST] {input} [/INST]",
+            max_tokens=512,
             temperature=0.7,
             top_p=0.95,
             repetition_penalty=1.1,
         ),
         PromptType.ANALYTICAL: PromptTemplate(
             type=PromptType.ANALYTICAL,
-            template="[INST] Analyze {subject} in terms of {aspect}. Consider {factors}. {additional_context} [/INST]",
-            max_tokens=512,
+            template="[INST] Analyze the following: {input} [/INST]",
+            max_tokens=1024,
             temperature=0.3,
             top_p=0.85,
             repetition_penalty=1.0,
         ),
-        PromptType.INSTRUCTIONAL: PromptTemplate(
-            type=PromptType.INSTRUCTIONAL,
-            template="[INST] Explain how to {action} regarding {subject}. Include {details}. {additional_context} [/INST]",
-            max_tokens=384,
-            temperature=0.4,
-            top_p=0.9,
-            repetition_penalty=1.0,
-        ),
         PromptType.CONVERSATIONAL: PromptTemplate(
             type=PromptType.CONVERSATIONAL,
-            template="[INST] {context} {query} [/INST]",
-            max_tokens=128,
+            template="[INST] {input} [/INST]",
+            max_tokens=512,
             temperature=0.6,
             top_p=0.9,
             repetition_penalty=1.2,
@@ -79,25 +71,16 @@ class PromptConfig:
             }
         }
 
-# Example prompt builders for specific use cases
-def build_creative_prompt(format: str, subject: str, aspect: str, 
-                         additional_context: str = "") -> Dict[str, Any]:
-    """Build a prompt for creative tasks like poetry or stories."""
+def build_creative_prompt(input_text: str) -> Dict[str, Any]:
+    """Build a prompt for creative tasks."""
     return PromptConfig.format_prompt(
         PromptType.CREATIVE,
-        format=format,
-        subject=subject,
-        aspect=aspect,
-        additional_context=additional_context
+        input=input_text
     )
 
-def build_analytical_prompt(subject: str, aspect: str, factors: str,
-                          additional_context: str = "") -> Dict[str, Any]:
+def build_analytical_prompt(input_text: str) -> Dict[str, Any]:
     """Build a prompt for analytical tasks."""
     return PromptConfig.format_prompt(
         PromptType.ANALYTICAL,
-        subject=subject,
-        aspect=aspect,
-        factors=factors,
-        additional_context=additional_context
+        input=input_text
     )
