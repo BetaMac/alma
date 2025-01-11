@@ -1,16 +1,21 @@
-from fastapi import FastAPI, WebSocket, HTTPException, BackgroundTasks
+from fastapi import FastAPI, WebSocket, HTTPException, BackgroundTasks, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, AsyncGenerator, Dict
 from contextlib import asynccontextmanager
 from agents.manager_agent import ManagerAgent
 import asyncio
 import json
 import logging
+from datetime import datetime
+import os
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# WebSocket connections store
+active_connections: Dict[str, WebSocket] = {}
 
 class TaskInput(BaseModel):
     input: str
@@ -18,115 +23,127 @@ class TaskInput(BaseModel):
     contextId: Optional[str] = None
 
 class TaskResponse(BaseModel):
-    response: str
     status: str
-    elapsedTime: float
-    contextId: Optional[str]
+    data: Optional[str] = None
+    message: Optional[str] = None
+    elapsedTime: Optional[float] = None
 
-app = FastAPI(title="AI Learning Agent API")
+app = FastAPI()
 
-# CORS middleware
+# Configure CORS with all necessary origins
+origins = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://localhost:3002",
+    "http://localhost:3003",
+    "http://localhost:3004",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",
+    "http://127.0.0.1:3002",
+    "http://127.0.0.1:3003",
+    "http://127.0.0.1:3004",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
-# Active WebSocket connections for status updates
-active_connections: dict[str, WebSocket] = {}
+# Initialize Manager Agent as a singleton
+manager_agent = ManagerAgent()
 
-# Background task to handle long-running processes
-async def process_task(task_input: TaskInput, connection_id: str):
+@app.websocket("/")
+async def websocket_endpoint(websocket: WebSocket):
     try:
-        manager = ManagerAgent()
-        start_time = asyncio.get_event_loop().time()
+        await websocket.accept()
+        client_id = str(id(websocket))
+        active_connections[client_id] = websocket
+        logger.info(f"New WebSocket connection established for client: {client_id}")
         
-        # Send status updates through WebSocket
-        if connection_id in active_connections:
-            await active_connections[connection_id].send_json({
-                "status": "processing",
-                "message": "Task started"
-            })
+        # Send initial connection confirmation
+        await websocket.send_json({
+            "status": "connected",
+            "message": "Connection established"
+        })
         
-        # Process based on task type
-        if task_input.taskType == "analytical":
-            # Stream response for analytical tasks
-            async for chunk in manager.process_analytical_task(task_input.input):
-                if connection_id in active_connections:
-                    await active_connections[connection_id].send_json({
-                        "status": "chunk",
-                        "data": chunk
-                    })
-        else:
-            # Direct response for creative tasks
-            response = await manager.process_creative_task(task_input.input)
-            if connection_id in active_connections:
-                await active_connections[connection_id].send_json({
-                    "status": "complete",
-                    "data": response
-                })
-                
-    except Exception as e:
-        logger.error(f"Error processing task: {str(e)}")
-        if connection_id in active_connections:
-            await active_connections[connection_id].send_json({
-                "status": "error",
-                "message": str(e)
-            })
-    finally:
-        elapsed_time = asyncio.get_event_loop().time() - start_time
-        if connection_id in active_connections:
-            await active_connections[connection_id].send_json({
-                "status": "finished",
-                "elapsedTime": elapsed_time
-            })
-
-@app.websocket("/ws/{client_id}")
-async def websocket_endpoint(websocket: WebSocket, client_id: str):
-    await websocket.accept()
-    
-    # Clean up any existing connection for this client_id
-    if client_id in active_connections:
         try:
-            await active_connections[client_id].close()
-        except:
-            pass
-        
-    active_connections[client_id] = websocket
-    logger.info(f"New WebSocket connection established for client: {client_id}")
-    
-    try:
-        while True:
-            # Wait for messages
-            data = await websocket.receive_text()
-            try:
-                # Process incoming message
-                message = json.loads(data)
-                logger.info(f"Received message from client {client_id}: {message}")
-            except json.JSONDecodeError:
-                logger.error(f"Invalid JSON received from client {client_id}")
+            while True:
+                try:
+                    data = await websocket.receive_text()
+                    # Keep connection alive with ping/pong
+                    if data == "ping":
+                        await websocket.send_json({
+                            "status": "pong",
+                            "timestamp": datetime.now().isoformat()
+                        })
+                        continue
+                    
+                    # Process actual messages
+                    message = json.loads(data)
+                    start_time = datetime.now()
+                    
+                    try:
+                        async for chunk in manager_agent.process_task(message["input"], message["taskType"]):
+                            await websocket.send_json({
+                                "status": "chunk",
+                                "data": chunk
+                            })
+                        
+                        elapsed_time = (datetime.now() - start_time).total_seconds()
+                        await websocket.send_json({
+                            "status": "complete",
+                            "elapsedTime": elapsed_time
+                        })
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing task: {str(e)}")
+                        await websocket.send_json({
+                            "status": "error",
+                            "message": str(e)
+                        })
+                        
+                except WebSocketDisconnect:
+                    logger.info(f"WebSocket disconnected for client: {client_id}")
+                    break
+                except Exception as e:
+                    logger.error(f"Error in WebSocket connection: {str(e)}")
+                    await websocket.send_json({
+                        "status": "error",
+                        "message": "Internal server error"
+                    })
+                    
+        except Exception as e:
+            logger.error(f"Error in WebSocket connection: {str(e)}")
+            
     except Exception as e:
-        logger.error(f"WebSocket error for client {client_id}: {str(e)}")
+        logger.error(f"Failed to establish WebSocket connection: {str(e)}")
     finally:
-        # Clean up connection
         if client_id in active_connections:
             del active_connections[client_id]
         logger.info(f"WebSocket connection closed for client: {client_id}")
 
-@app.post("/api/agent/process")
-async def process_agent_task(task_input: TaskInput, background_tasks: BackgroundTasks):
-    connection_id = task_input.contextId or "default"
-    if connection_id not in active_connections:
-        raise HTTPException(status_code=400, detail="No active connection found")
-    background_tasks.add_task(process_task, task_input, connection_id)
-    return {"status": "accepted", "connectionId": connection_id}
-
-@app.get("/api/health")
+@app.get("/health")
 async def health_check():
     return {"status": "healthy"}
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.post("/api/agent/process")
+async def process_task(task: TaskInput):
+    try:
+        # This endpoint now just validates the request
+        # Actual processing happens through WebSocket
+        return {"status": "accepted", "message": "Task will be processed via WebSocket"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    # Cleanup resources
+    manager_agent.cleanup()
+    # Close all WebSocket connections
+    for connection in active_connections.values():
+        await connection.close()
+    active_connections.clear()

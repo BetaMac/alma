@@ -19,33 +19,48 @@ export const useWebSocket = (url: string, options: WebSocketHookOptions) => {
   const [isConnected, setIsConnected] = useState(false);
 
   useEffect(() => {
-    wsManager.connect(url);
+    console.log('Attempting to connect to WebSocket:', url);
     
-    const unsubscribe = wsManager.subscribe((connected) => {
-      setIsConnected(connected);
-      if (connected) {
-        options.onOpen?.();
-      } else {
-        options.onClose?.();
-      }
-    });
+    try {
+      wsManager.connect(url);
+      
+      const unsubscribe = wsManager.subscribe((connected) => {
+        console.log('WebSocket connection status:', connected);
+        setIsConnected(connected);
+        if (connected) {
+          console.log('WebSocket connected successfully');
+          options.onOpen?.();
+        } else {
+          console.log('WebSocket disconnected');
+          options.onClose?.();
+        }
+      });
 
-    const unsubscribeMessage = wsManager.addMessageHandler((event) => {
-      try {
-        const message: WebSocketMessage = JSON.parse(event.data);
-        options.onMessage?.(message);
-      } catch (error) {
-        console.error('Error parsing WebSocket message:', error);
-      }
-    });
+      const unsubscribeMessage = wsManager.addMessageHandler((event) => {
+        try {
+          console.log('Received WebSocket message:', event.data);
+          const message: WebSocketMessage = JSON.parse(event.data);
+          options.onMessage?.(message);
+        } catch (error) {
+          console.error('Error parsing WebSocket message:', error);
+          options.onError?.(new Event('parse_error'));
+        }
+      });
 
-    return () => {
-      unsubscribe();
-      unsubscribeMessage();
-    };
+      return () => {
+        console.log('Cleaning up WebSocket connections');
+        unsubscribe();
+        unsubscribeMessage();
+      };
+    } catch (error) {
+      console.error('Error setting up WebSocket:', error);
+      options.onError?.(new Event('setup_error'));
+      return () => {};
+    }
   }, [url, options]);
 
   const sendMessage = useCallback((message: any) => {
+    console.log('Sending WebSocket message:', message);
     wsManager.send(message);
   }, []);
 

@@ -1,5 +1,5 @@
 # backend/agents/manager_agent.py
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, AsyncIterator, AsyncGenerator
 from pydantic import BaseModel
 from ctransformers import AutoModelForCausalLM
 from loguru import logger
@@ -11,6 +11,8 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from .prompt_system import PromptConfig, PromptType, build_creative_prompt, build_analytical_prompt
+from transformers import AutoTokenizer
+from pathlib import Path
 
 class ManagerAgentError(Exception):
     """Base exception class for Manager Agent errors"""
@@ -75,7 +77,90 @@ class Task(BaseModel):
         return (time.time() - self.created_at) <= self.timeout_seconds
 
 class ManagerAgent:
-    """Core Manager Agent that orchestrates the AI learning system"""
+    _instance = None
+    _model = None
+    _model_lock = asyncio.Lock()
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self, model_id: str = "TheBloke/Mistral-7B-Instruct-v0.2-GGUF",
+                 model_file: str = "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
+                 max_retries: int = 3,
+                 default_timeout: int = 600,
+                 max_memory_percent: float = 0.9):
+        """Initialize the Manager Agent with Mistral model."""
+        if not hasattr(self, '_initialized'):
+            logger.info("Initializing Manager Agent")
+            self.model_id = model_id
+            self.model_file = model_file
+            self.tasks: Dict[str, Task] = {}
+            self.active_agents: Dict[str, Any] = {}
+            self.max_retries = max_retries
+            self.default_timeout = default_timeout
+            self.max_memory_percent = max_memory_percent
+            self._initialized = True
+            if self._model is None:
+                self._initialize_model()
+
+    async def get_model(self):
+        """Get or initialize the model with thread safety."""
+        async with self._model_lock:
+            if self._model is None:
+                self._initialize_model()
+            return self._model
+
+    def _initialize_model(self):
+        """Initialize the Mistral model with caching."""
+        if self._model is not None:
+            return
+
+        try:
+            logger.info("Initializing Mistral model...")
+            self._check_cuda_memory()
+            logger.info(f"Available GPU memory before init: {self._get_available_memory():.2f}MB")
+            
+            model_path = Path("models") / self.model_file
+            
+            if not model_path.exists():
+                logger.info(f"Downloading model to {model_path}...")
+                model_path.parent.mkdir(exist_ok=True)
+                from huggingface_hub import hf_hub_download
+                hf_hub_download(
+                    repo_id=self.model_id,
+                    filename=self.model_file,
+                    local_dir="models"
+                )
+            
+            self._model = AutoModelForCausalLM.from_pretrained(
+                str(model_path),
+                model_type="mistral",
+                gpu_layers=35,
+                context_length=2048,
+                max_new_tokens=1024,
+                threads=4,
+                batch_size=1
+            )
+            
+            logger.info("Model initialized successfully")
+            self._verify_model_initialization()
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize model: {str(e)}")
+            raise ModelInitializationError(f"Model initialization failed: {str(e)}")
+
+    def _verify_model_initialization(self):
+        """Verify model initialization with a test generation."""
+        try:
+            test_output = self._model("Test", max_new_tokens=10)
+            if not test_output or len(test_output.strip()) == 0:
+                raise ModelInitializationError("Model verification failed: empty output")
+            logger.info("Model verification successful")
+        except Exception as e:
+            raise ModelInitializationError(f"Model verification failed: {str(e)}")
+
     def _validate_task(self, task: Task) -> None:
         """Validate task parameters before processing."""
         if not task.id:
@@ -84,7 +169,7 @@ class ManagerAgent:
             raise TaskValidationError("Task prompt is required")
         if task.status not in TaskStatus:
             raise TaskValidationError(f"Invalid task status: {task.status}")
-            
+
     def _process_prompt(self, prompt: str, task_type: PromptType) -> Dict[str, Any]:
         """Process and validate prompt based on task type."""
         try:
@@ -93,9 +178,8 @@ class ManagerAgent:
             elif task_type == PromptType.ANALYTICAL:
                 return build_analytical_prompt(prompt)
             else:
-                # Default to conversational prompt
                 return {
-                    "prompt": f"[INST] {prompt} [/INST]",
+                    "prompt": f"{prompt}",
                     "generation_params": {
                         "max_new_tokens": 1024,
                         "temperature": 0.7,
@@ -156,183 +240,146 @@ class ManagerAgent:
         """Cleanup resources before shutdown."""
         try:
             self._cleanup_gpu_memory()
-            if self.model:
-                del self.model
-                self.model = None
+            if self._model:
+                del self._model
+                self._model = None
             logger.info("Manager Agent cleanup completed")
         except Exception as e:
             logger.error(f"Error during cleanup: {str(e)}")
 
     async def process_creative_task(self, prompt: str) -> str:
-        """Process a creative task."""
-        task = await self.create_task(prompt, PromptType.CREATIVE)
-        processed_task = await self.process_task(task)
-        return processed_task.result or ""
-
-    async def process_analytical_task(self, prompt: str) -> str:
-        """Process an analytical task."""
-        task = await self.create_task(prompt, PromptType.ANALYTICAL)
-        processed_task = await self.process_task(task)
-        return processed_task.result or ""
-    
-    def __init__(self, model_id: str = "TheBloke/Mistral-7B-Instruct-v0.2-GGUF",
-                 model_file: str = "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
-                 max_retries: int = 3,
-                 default_timeout: int = 600,
-                 max_memory_percent: float = 0.9):  # Add memory threshold
-        """Initialize the Manager Agent with Mistral model."""
-        logger.info("Initializing Manager Agent")
-        self.model_id = model_id
-        self.model_file = model_file
-        self.model = None
-        self.tasks: Dict[str, Task] = {}
-        self.active_agents: Dict[str, Any] = {}
-        self.max_retries = max_retries
-        self.default_timeout = default_timeout
-        self.max_memory_percent = max_memory_percent
-        self._initialize_model()
-        
-    def _check_cuda_memory(self) -> Dict[str, Any]:
-        """Check CUDA memory status and availability"""
-        if not torch.cuda.is_available():
-            return {"available": False, "error": "CUDA not available"}
-            
+        """Process a creative task with optimized parameters."""
         try:
-            device = torch.cuda.current_device()
-            total_memory = torch.cuda.get_device_properties(device).total_memory
-            reserved_memory = torch.cuda.memory_reserved(device)
-            allocated_memory = torch.cuda.memory_allocated(device)
-            free_memory = total_memory - allocated_memory
+            await self._ensure_memory_available()
+            self._model.reset()
             
-            memory_stats = {
-                "available": True,
-                "total": total_memory,
-                "reserved": reserved_memory,
-                "allocated": allocated_memory,
-                "free": free_memory,
-                "utilization": allocated_memory / total_memory
+            prompt_config = build_creative_prompt(prompt)
+            generation_params = {
+                **prompt_config['generation_params'],
+                'max_new_tokens': 512,
+                'temperature': 0.7,
+                'top_p': 0.9,
+                'repetition_penalty': 1.1,
+                'stream': False
             }
             
-            logger.debug(f"CUDA Memory Stats: {memory_stats}")
-            return memory_stats
+            response = self._model(prompt_config['prompt'], **generation_params)
+            return response.strip()
             
+        except Exception as e:
+            logger.error(f"Error in creative task: {str(e)}")
+            raise
+        finally:
+            self._cleanup_gpu_memory()
+
+    async def process_analytical_task(self, prompt: str) -> AsyncIterator[str]:
+        """Process an analytical task with optimized streaming."""
+        try:
+            await self._ensure_memory_available()
+            self._model.reset()
+            
+            prompt_config = build_analytical_prompt(prompt)
+            generation_params = {
+                **prompt_config['generation_params'],
+                'max_new_tokens': 1024,
+                'temperature': 0.3,
+                'top_p': 0.85,
+                'repetition_penalty': 1.0,
+                'stream': True
+            }
+            
+            current_chunk = ""
+            chunk_size = 0
+            
+            for token in self._model(prompt_config['prompt'], **generation_params):
+                current_chunk += token
+                chunk_size += 1
+                
+                if chunk_size >= 20 or token[-1] in '.!?\n':
+                    yield current_chunk
+                    current_chunk = ""
+                    chunk_size = 0
+                    await asyncio.sleep(0.01)
+            
+            if current_chunk:
+                yield current_chunk
+                
+        except Exception as e:
+            logger.error(f"Error in analytical task: {str(e)}")
+            raise
+        finally:
+            self._cleanup_gpu_memory()
+
+    def _get_available_memory(self) -> float:
+        """Get available GPU memory in MB."""
+        if not torch.cuda.is_available():
+            return 0.0
+        
+        try:
+            torch.cuda.empty_cache()
+            return torch.cuda.get_device_properties(0).total_memory / 1024 / 1024
+        except Exception as e:
+            logger.error(f"Error getting GPU memory: {str(e)}")
+            return 0.0
+
+    def _check_cuda_memory(self) -> Dict[str, Any]:
+        """Check CUDA memory status."""
+        if not torch.cuda.is_available():
+            return {
+                "available": False,
+                "total": 0,
+                "reserved": 0,
+                "allocated": 0,
+                "free": 0,
+                "utilization": 0.0
+            }
+        
+        try:
+            torch.cuda.empty_cache()
+            stats = {
+                "available": True,
+                "total": torch.cuda.get_device_properties(0).total_memory,
+                "reserved": torch.cuda.memory_reserved(0),
+                "allocated": torch.cuda.memory_allocated(0),
+                "free": torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0),
+                "utilization": torch.cuda.memory_allocated(0) / torch.cuda.get_device_properties(0).total_memory * 100
+            }
+            logger.debug(f"CUDA Memory Stats: {stats}")
+            return stats
         except Exception as e:
             logger.error(f"Error checking CUDA memory: {str(e)}")
-            return {"available": False, "error": str(e)}
+            return {
+                "available": False,
+                "error": str(e)
+            }
+
+    async def _ensure_memory_available(self) -> None:
+        """Ensure sufficient GPU memory is available."""
+        if not torch.cuda.is_available():
+            return
+        
+        stats = self._check_cuda_memory()
+        if stats["utilization"] > (self.max_memory_percent * 100):
+            self._cleanup_gpu_memory()
+            stats = self._check_cuda_memory()
+            if stats["utilization"] > (self.max_memory_percent * 100):
+                raise MemoryError("Insufficient GPU memory available")
 
     def _cleanup_gpu_memory(self) -> None:
-        """Force cleanup of GPU memory"""
-        try:
-            if torch.cuda.is_available():
+        """Clean up GPU memory."""
+        if torch.cuda.is_available():
+            try:
+                if self._model:
+                    self._model.reset()
+                
                 torch.cuda.empty_cache()
                 gc.collect()
-                logger.info("GPU memory cleanup performed")
-        except Exception as e:
-            logger.error(f"Error during GPU memory cleanup: {str(e)}")
-
-    async def _ensure_memory_available(self) -> bool:
-        """Check if sufficient memory is available for task processing"""
-        memory_stats = self._check_cuda_memory()
-        
-        if not memory_stats["available"]:
-            logger.warning("CUDA not available for memory check")
-            return True  # Continue with CPU if CUDA not available
-            
-        if memory_stats["utilization"] > self.max_memory_percent:
-            logger.warning("High GPU memory utilization detected")
-            self._cleanup_gpu_memory()
-            
-            # Recheck after cleanup
-            memory_stats = self._check_cuda_memory()
-            if memory_stats["utilization"] > self.max_memory_percent:
-                raise MemoryError("Insufficient GPU memory available after cleanup")
+                torch.cuda.synchronize()
                 
-        return True
-
-    def _initialize_model(self) -> None:
-        """Initialize the Mistral model with appropriate settings."""
-        try:
-            logger.info("Initializing Mistral model...")
-            
-            # Check memory before initialization
-            memory_stats = self._check_cuda_memory()
-            if memory_stats["available"]:
-                logger.info(f"Available GPU memory before init: {memory_stats['free'] / 1024**2:.2f}MB")
-            
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_id,
-                model_file=self.model_file,
-                model_type="mistral",
-                gpu_layers=50,  # Adjustable based on GPU memory
-                context_length=2048  # Adjust based on available memory
-            )
-            
-            # Verify memory after initialization
-            if memory_stats["available"]:
-                post_init_stats = self._check_cuda_memory()
-                logger.info(f"GPU memory used by model: {(memory_stats['free'] - post_init_stats['free']) / 1024**2:.2f}MB")
-            
-            logger.success("Model initialization successful")
-            
-        except Exception as e:
-            error_msg = f"Failed to initialize model: {str(e)}"
-            logger.error(error_msg)
-            raise ModelInitializationError(error_msg)
-
-    async def process_task(self, task: Task) -> Task:
-        """Process a task with memory management and retries."""
-        self._validate_task(task)
-        retries = 0
-        
-        while retries < self.max_retries:
-            try:
-                async with self._task_context(task):
-                    # Check memory availability
-                    await self._ensure_memory_available()
-                    
-                    if not task.validate_timeout():
-                        raise asyncio.TimeoutError()
-                    
-                    task_type = task.metadata.get('type', PromptType.CONVERSATIONAL)
-                    prompt_config = self._process_prompt(task.prompt, task_type)
-                    
-                    # Use asyncio.wait_for for timeout handling
-                    timeout = task.timeout_seconds or self.default_timeout
-                    response = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            self.model,
-                            prompt_config['prompt'],
-                            **prompt_config['generation_params']
-                        ),
-                        timeout=timeout
-                    )
-                    
-                    task.result = response.strip()
-                    task.status = TaskStatus.COMPLETED
-                    logger.success(f"Task {task.id} completed successfully")
-                    
-                    # Cleanup after task completion
-                    self._cleanup_gpu_memory()
-                    break
-                    
-            except MemoryError as e:
-                logger.error(f"Memory error during task {task.id}: {str(e)}")
-                await asyncio.sleep(2)  # Wait for memory to potentially free up
-                retries += 1
-            except (asyncio.TimeoutError, TaskProcessingError) as e:
-                retries += 1
-                if retries >= self.max_retries:
-                    task.status = TaskStatus.FAILED
-                    task.error = f"Failed after {retries} attempts: {str(e)}"
-                    logger.error(f"Task {task.id} failed permanently: {str(e)}")
-                else:
-                    logger.warning(f"Retrying task {task.id}, attempt {retries + 1}")
-                    await asyncio.sleep(1)  # Brief delay before retry
-            finally:
-                # Ensure memory cleanup happens even on failure
-                self._cleanup_gpu_memory()
-            
-        return task
+                logger.debug("GPU memory cleanup completed")
+                
+            except Exception as e:
+                logger.error(f"Error during GPU memory cleanup: {str(e)}")
 
     def get_memory_stats(self) -> Dict[str, Any]:
         """Get current memory statistics"""
@@ -354,3 +401,38 @@ class ManagerAgent:
             },
             "memory_stats": memory_stats
         }
+
+    async def process_task(self, prompt: str, task_type: str) -> AsyncGenerator[str, None]:
+        """Process a task with streaming response."""
+        model = await self.get_model()
+        try:
+            prompt_config = self._process_prompt(prompt, PromptType(task_type))
+            async for chunk in self._generate_response(model, prompt_config):
+                yield chunk
+        except Exception as e:
+            logger.error(f"Error processing task: {str(e)}")
+            raise TaskProcessingError(str(e))
+
+    async def _generate_response(self, model, prompt_config: Dict[str, Any]) -> AsyncGenerator[str, None]:
+        """Generate response with streaming."""
+        try:
+            response = ""
+            chunk_size = 8  # Adjust based on your needs
+            
+            # Get the full response first
+            full_response = model(
+                prompt_config['prompt'],
+                **prompt_config['generation_params']
+            )
+            
+            # Stream it in chunks
+            words = full_response.split()
+            for i in range(0, len(words), chunk_size):
+                chunk = " ".join(words[i:i + chunk_size])
+                response += chunk + " "
+                yield chunk + " "
+                await asyncio.sleep(0.1)  # Prevent overwhelming the frontend
+                
+        except Exception as e:
+            logger.error(f"Error generating response: {str(e)}")
+            raise TaskProcessingError(f"Failed to generate response: {str(e)}")

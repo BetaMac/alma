@@ -1,18 +1,11 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  async rewrites() {
-    return [
-      {
-        source: '/api/:path*',
-        destination: 'http://localhost:8000/api/:path*',
-      },
-      {
-        source: '/ws/:path*',
-        destination: 'http://localhost:8000/ws/:path*',  // Changed from ws:// to http://
-      },
-    ]
-  }
+  swcMinify: true,
+  webpack: (config) => {
+    config.externals = [...config.externals, { bufferutil: "bufferutil", "utf-8-validate": "utf-8-validate" }];
+    return config;
+  },
 }
 
 module.exports = nextConfig

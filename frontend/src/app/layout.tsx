@@ -17,13 +17,12 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <head />
       <body className={cn(
         "min-h-screen bg-background font-sans antialiased",
         inter.className
       )}>
         <div className="relative flex min-h-screen flex-col">
-          <div className="flex-1">{children}</div>
+          <div className="flex-1 container mx-auto">{children}</div>
         </div>
       </body>
     </html>
