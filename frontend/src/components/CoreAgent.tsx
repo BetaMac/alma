@@ -30,7 +30,7 @@ const CoreAgent = () => {
       timer = setInterval(() => {
         setElapsedTime(prev => {
           const newElapsedTime = prev + 1;
-          const expectedDuration = taskType === 'creative' ? 30 : 600;
+          const expectedDuration = taskType === 'creative' ? 30 : 60;
           setProgress(Math.min((newElapsedTime / expectedDuration) * 100, 99));
           return newElapsedTime;
         });
@@ -136,7 +136,7 @@ const CoreAgent = () => {
     }
   };
 
-  const expectedDuration = taskType === 'creative' ? '~30 seconds' : '~10 minutes';
+  const expectedDuration = taskType === 'creative' ? '~30 seconds' : '~60 seconds';
 
   const renderStatus = () => {
     if (!isConnected && status !== 'success') {
@@ -169,7 +169,7 @@ const CoreAgent = () => {
             <AlertDescription>
               Processing... ({elapsedTime}s elapsed)
               <div className="text-xs text-gray-500">
-                Expected duration: {taskType === 'creative' ? '~30 seconds' : '~10 minutes'}
+                Expected duration: {taskType === 'creative' ? '~30 seconds' : '~60 seconds'}
               </div>
             </AlertDescription>
           </Alert>
@@ -229,8 +229,8 @@ const CoreAgent = () => {
                 <SelectValue placeholder="Select task type" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="creative">Creative ({expectedDuration})</SelectItem>
-                <SelectItem value="analytical">Analytical ({expectedDuration})</SelectItem>
+                <SelectItem value="creative">Creative (~30s)</SelectItem>
+                <SelectItem value="analytical">Analytical (~60s)</SelectItem>
               </SelectContent>
             </Select>
             <Button 

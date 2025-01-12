@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Activity, HardDrive, Clock, Server } from 'lucide-react';
 import { RecentTasks } from './RecentTasks';
+import axios from 'axios';
 
 interface MemoryStats {
   available: boolean;
@@ -24,7 +25,18 @@ interface Task {
 }
 
 interface SystemMetrics {
-  memory_stats: MemoryStats;
+  memory_stats: {
+    available: boolean;
+    total: number;
+    allocated: number;
+    free: number;
+    utilization: number;
+    peak: number;
+    system_total: number;
+    system_used: number;
+    system_free: number;
+    system_percent: number;
+  };
   active_tasks: number;
   active_agents: number;
   task_statistics: Record<string, number>;
@@ -66,6 +78,15 @@ export function PerformanceMonitor() {
     return date.toLocaleTimeString();
   };
 
+  const handleUnloadModel = async () => {
+    try {
+      const response = await axios.post('/api/unload_model');
+      alert(response.data.message);
+    } catch (error) {
+      alert('Error unloading model: ' + error.message);
+    }
+  };
+
   if (!metrics) {
     return <div>Loading metrics...</div>;
   }
@@ -76,19 +97,37 @@ export function PerformanceMonitor() {
         {/* Memory Usage Card */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Memory Usage</CardTitle>
+            <CardTitle className="text-sm font-medium">GPU Memory</CardTitle>
             <HardDrive className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{metrics.memory_stats.utilization.toFixed(1)}%</div>
-            <div className="text-xs text-muted-foreground">
-              Free: {formatBytes(metrics.memory_stats.free)}
+            <div className="text-2xl font-bold">
+              {((metrics.memory_stats?.allocated || 0) / 1024 / 1024 / 1024).toFixed(2)} GB
             </div>
-            <div className="mt-4 h-2 w-full bg-secondary rounded-full">
-              <div
-                className="h-2 bg-primary rounded-full transition-all duration-500"
-                style={{ width: `${metrics.memory_stats.utilization}%` }}
-              />
+            <div className="text-xs text-muted-foreground mt-1">
+              Peak: {((metrics.memory_stats?.peak || 0) / 1024 / 1024 / 1024).toFixed(2)} GB
+            </div>
+            <div className="mt-3">
+              <div className="text-xs text-muted-foreground mb-1">
+                {metrics.memory_stats?.utilization.toFixed(1)}% GPU utilized
+              </div>
+              <div className="h-2 w-full bg-secondary rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-primary"
+                  style={{ width: `${metrics.memory_stats?.utilization || 0}%` }}
+                />
+              </div>
+            </div>
+            <div className="mt-3">
+              <div className="text-xs text-muted-foreground mb-1">
+                {metrics.memory_stats?.system_percent.toFixed(1)}% System RAM
+              </div>
+              <div className="h-2 w-full bg-secondary rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-primary"
+                  style={{ width: `${metrics.memory_stats?.system_percent || 0}%` }}
+                />
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -146,6 +185,8 @@ export function PerformanceMonitor() {
 
       {/* Recent Tasks and Token Usage */}
       <RecentTasks tasks={metrics.recent_tasks || []} />
+
+      <button onClick={handleUnloadModel}>Unload Model</button>
     </div>
   );
 } 
