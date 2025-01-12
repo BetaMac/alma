@@ -488,14 +488,15 @@ class ManagerAgent:
             logger.info(f"  Free: {memory_before['free']/1024/1024:.2f}MB")
             logger.info(f"  Utilization: {memory_before['utilization']:.2f}%")
             
-            # Process the prompt
+            # Process the prompt with increased token limit
             prompt_config = {
                 "prompt": f"[INST] {prompt} [/INST]",
                 "generation_params": {
-                    "max_new_tokens": 2048,
+                    "max_new_tokens": 4096,  # Increased from 2048
                     "temperature": 0.7,
                     "top_p": 0.9,
-                    "repetition_penalty": 1.1
+                    "repetition_penalty": 1.1,
+                    "stream": True  # Enable streaming by default
                 }
             }
             
@@ -536,27 +537,24 @@ class ManagerAgent:
     async def _generate_response(self, model, prompt_config: Dict[str, Any]) -> AsyncGenerator[str, None]:
         """Generate response with streaming."""
         try:
-            if prompt_config['generation_params'].get('stream', False):
-                # Stream tokens directly from the model
-                current_chunk = ""
-                chunk_size = 0
+            current_chunk = ""
+            chunk_size = 0
+            buffer_size = 16  # Increased buffer size for smoother streaming
+            
+            for token in model(prompt_config['prompt'], **prompt_config['generation_params']):
+                current_chunk += token
+                chunk_size += 1
                 
-                for token in model(prompt_config['prompt'], **prompt_config['generation_params']):
-                    current_chunk += token
-                    chunk_size += 1
-                    
-                    if chunk_size >= 8 or token[-1] in '.!?\n':
-                        yield current_chunk
-                        current_chunk = ""
-                        chunk_size = 0
-                        await asyncio.sleep(0.01)  # Small delay to prevent overwhelming the frontend
-                
-                if current_chunk:  # Yield any remaining tokens
+                # Yield chunks on natural breaks or when buffer is full
+                if chunk_size >= buffer_size or any(p in token for p in '.!?\n'):
                     yield current_chunk
-            else:
-                # For non-streaming responses, get full response and return it
-                response = model(prompt_config['prompt'], **prompt_config['generation_params'])
-                yield response.strip()
+                    current_chunk = ""
+                    chunk_size = 0
+                    await asyncio.sleep(0.01)  # Small delay to prevent overwhelming the frontend
+            
+            # Yield any remaining tokens
+            if current_chunk:
+                yield current_chunk
                 
         except Exception as e:
             logger.error(f"Error generating response: {str(e)}")
