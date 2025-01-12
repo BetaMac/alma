@@ -9,6 +9,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { AlertCircle, Clock, CheckCircle, RefreshCcw, Terminal } from 'lucide-react';
 import { useWebSocket, WebSocketMessage } from '@/hooks/useWebSocket';
 import { wsManager } from '@/lib/websocketManager';
+import { PerformanceMonitor } from './PerformanceMonitor';
 // Removed the import for Progress due to the error
 
 const CoreAgent = () => {
@@ -249,6 +250,10 @@ const CoreAgent = () => {
             <pre className="whitespace-pre-wrap font-mono text-sm">{response}</pre>
           </div>
         )}
+
+        <div className="mt-8">
+          <PerformanceMonitor />
+        </div>
       </CardContent>
     </Card>
   );
