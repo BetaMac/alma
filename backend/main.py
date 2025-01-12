@@ -139,6 +139,14 @@ async def process_task(task: TaskInput):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/metrics")
+async def get_metrics():
+    """Get system metrics including memory usage, task statistics, and system status."""
+    try:
+        return manager_agent.get_status()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.on_event("shutdown")
 async def shutdown_event():
     # Cleanup resources
@@ -147,3 +155,12 @@ async def shutdown_event():
     for connection in active_connections.values():
         await connection.close()
     active_connections.clear()
+
+@app.post("/api/unload_model")
+def unload_model():
+    """Endpoint to unload the model from GPU."""
+    try:
+        manager_agent.unload_model()
+        return {"status": "success", "message": "Model unloaded successfully."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}

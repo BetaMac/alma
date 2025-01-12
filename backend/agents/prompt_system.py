@@ -9,14 +9,15 @@ class PromptType(Enum):
     INSTRUCTIONAL = "instructional"
     CONVERSATIONAL = "conversational"
 
-class PromptTemplate(BaseModel):
-    type: PromptType
-    template: str
-    max_tokens: int
-    temperature: float
-    top_p: float
-    top_k: int = 40
-    repetition_penalty: float
+class PromptTemplate:
+    def __init__(self, type: PromptType, template: str, max_tokens: int = 512,
+                 temperature: float = 0.7, top_p: float = 0.9, repetition_penalty: float = 1.0):
+        self.type = type
+        self.template = template
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.top_p = top_p
+        self.repetition_penalty = repetition_penalty
 
 class PromptConfig:
     """Configuration for different types of prompts with optimized parameters"""
@@ -32,11 +33,11 @@ class PromptConfig:
         ),
         PromptType.ANALYTICAL: PromptTemplate(
             type=PromptType.ANALYTICAL,
-            template="[INST] You are an analytical assistant. Think step by step and be thorough yet concise. Task: {input} [/INST]",
-            max_tokens=1024,
+            template="[INST] You are a highly knowledgeable AI assistant. Provide a detailed, well-structured response to the following query. Focus on accuracy and clarity. Query: {input} [/INST]",
+            max_tokens=4096,
             temperature=0.3,
             top_p=0.85,
-            repetition_penalty=1.0,
+            repetition_penalty=1.0
         ),
         PromptType.CONVERSATIONAL: PromptTemplate(
             type=PromptType.CONVERSATIONAL,
@@ -84,7 +85,6 @@ class PromptConfig:
             "max_new_tokens": template.max_tokens,
             "temperature": template.temperature,
             "top_p": template.top_p,
-            "top_k": template.top_k,
             "repetition_penalty": template.repetition_penalty
         }
         

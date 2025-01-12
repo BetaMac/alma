@@ -13,6 +13,9 @@ from contextlib import asynccontextmanager
 from .prompt_system import PromptConfig, PromptType, build_creative_prompt, build_analytical_prompt
 from transformers import AutoTokenizer
 from pathlib import Path
+import psutil
+import subprocess
+import json
 
 class ManagerAgentError(Exception):
     """Base exception class for Manager Agent errors"""
@@ -69,6 +72,10 @@ class Task(BaseModel):
     metadata: Dict[str, Any] = {}
     created_at: float  # timestamp
     timeout_seconds: Optional[int] = None
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    task_type: Optional[str] = None
+    execution_time: Optional[float] = None
     
     def validate_timeout(self) -> bool:
         """Check if task has exceeded its timeout period"""
@@ -104,6 +111,8 @@ class ManagerAgent:
             self._initialized = True
             if self._model is None:
                 self._initialize_model()
+            self.recent_tasks: List[Task] = []  # Keep track of recent tasks
+            self.max_recent_tasks = 10  # Maximum number of recent tasks to store
 
     async def get_model(self):
         """Get or initialize the model with thread safety."""
@@ -119,8 +128,11 @@ class ManagerAgent:
 
         try:
             logger.info("Initializing Mistral model...")
-            self._check_cuda_memory()
-            logger.info(f"Available GPU memory before init: {self._get_available_memory():.2f}MB")
+            logger.info("GPU Memory before model load:")
+            memory_before = self._check_cuda_memory()
+            logger.info(f"  Used: {memory_before['allocated']/1024/1024:.2f}MB")
+            logger.info(f"  Free: {memory_before['free']/1024/1024:.2f}MB")
+            logger.info(f"  Utilization: {memory_before['utilization']:.2f}%")
             
             model_path = Path("models") / self.model_file
             
@@ -138,11 +150,19 @@ class ManagerAgent:
                 str(model_path),
                 model_type="mistral",
                 gpu_layers=35,
-                context_length=2048,
-                max_new_tokens=1024,
+                context_length=4096,
+                max_new_tokens=2048,
                 threads=4,
                 batch_size=1
             )
+            
+            # Track memory after model load
+            logger.info("GPU Memory after model load:")
+            memory_after = self._check_cuda_memory()
+            logger.info(f"  Used: {memory_after['allocated']/1024/1024:.2f}MB")
+            logger.info(f"  Free: {memory_after['free']/1024/1024:.2f}MB")
+            logger.info(f"  Utilization: {memory_after['utilization']:.2f}%")
+            logger.info(f"Memory used by model: {(memory_after['allocated'] - memory_before['allocated']) / 1024 / 1024:.2f}MB")
             
             logger.info("Model initialized successfully")
             self._verify_model_initialization()
@@ -239,10 +259,21 @@ class ManagerAgent:
     def cleanup(self) -> None:
         """Cleanup resources before shutdown."""
         try:
-            self._cleanup_gpu_memory()
+            logger.info("GPU Memory before cleanup:")
+            memory_before = self._check_cuda_memory()
+            logger.info(f"  Used: {memory_before['allocated']/1024/1024:.2f}MB")
+            logger.info(f"  Utilization: {memory_before['utilization']:.2f}%")
+
             if self._model:
                 del self._model
                 self._model = None
+
+            logger.info("GPU Memory after cleanup:")
+            memory_after = self._check_cuda_memory()
+            logger.info(f"  Used: {memory_after['allocated']/1024/1024:.2f}MB")
+            logger.info(f"  Utilization: {memory_after['utilization']:.2f}%")
+            logger.info(f"Memory freed: {(memory_before['allocated'] - memory_after['allocated']) / 1024 / 1024:.2f}MB")
+
             logger.info("Manager Agent cleanup completed")
         except Exception as e:
             logger.error(f"Error during cleanup: {str(e)}")
@@ -272,43 +303,34 @@ class ManagerAgent:
         finally:
             self._cleanup_gpu_memory()
 
-    async def process_analytical_task(self, prompt: str) -> AsyncIterator[str]:
-        """Process an analytical task with optimized streaming."""
-        try:
-            await self._ensure_memory_available()
-            self._model.reset()
+    async def process_analytical_task(self, task: Task) -> AsyncGenerator[str, None]:
+        """Process an analytical task with streaming support."""
+        generation_params = {
+            'max_new_tokens': 4096,  # Increased from 2048
+            'temperature': 0.3,
+            'top_p': 0.85,
+            'stream': True
+        }
+        
+        current_chunk = ""
+        total_tokens = 0
+        
+        async for token in self._generate_response(task.prompt, generation_params):
+            current_chunk += token
+            total_tokens += 1
             
-            prompt_config = build_analytical_prompt(prompt)
-            generation_params = {
-                **prompt_config['generation_params'],
-                'max_new_tokens': 1024,
-                'temperature': 0.3,
-                'top_p': 0.85,
-                'repetition_penalty': 1.0,
-                'stream': True
-            }
-            
-            current_chunk = ""
-            chunk_size = 0
-            
-            for token in self._model(prompt_config['prompt'], **generation_params):
-                current_chunk += token
-                chunk_size += 1
-                
-                if chunk_size >= 20 or token[-1] in '.!?\n':
-                    yield current_chunk
-                    current_chunk = ""
-                    chunk_size = 0
-                    await asyncio.sleep(0.01)
-            
-            if current_chunk:
+            # Yield on natural breaks or when chunk is large enough
+            if (len(current_chunk) >= 8 or 
+                any(p in current_chunk for p in ['.', '!', '?', '\n'])):
                 yield current_chunk
-                
-        except Exception as e:
-            logger.error(f"Error in analytical task: {str(e)}")
-            raise
-        finally:
-            self._cleanup_gpu_memory()
+                current_chunk = ""
+            
+            # Safety check for token limit
+            if total_tokens >= 4096:
+                logger.warning(f"Reached token limit of 4096 at position {total_tokens}")
+                if current_chunk:
+                    yield current_chunk
+                break
 
     def _get_available_memory(self) -> float:
         """Get available GPU memory in MB."""
@@ -322,32 +344,55 @@ class ManagerAgent:
             logger.error(f"Error getting GPU memory: {str(e)}")
             return 0.0
 
-    def _check_cuda_memory(self) -> Dict[str, Any]:
-        """Check CUDA memory status."""
-        if not torch.cuda.is_available():
+    @staticmethod
+    def _get_gpu_memory():
+        """Get GPU memory info using nvidia-smi."""
+        try:
+            result = subprocess.check_output(
+                ['nvidia-smi', '--query-gpu=memory.used,memory.total,memory.free', '--format=csv,nounits,noheader'],
+                encoding='utf-8'
+            )
+            used, total, free = map(int, result.strip().split(','))
+            return {
+                "available": True,
+                "total": total * 1024 * 1024,  # Convert MB to bytes
+                "allocated": used * 1024 * 1024,
+                "free": free * 1024 * 1024,
+                "utilization": (used / total) * 100,
+                "peak": used * 1024 * 1024  # Current usage as peak
+            }
+        except Exception as e:
+            logger.error(f"Error getting GPU memory: {str(e)}")
             return {
                 "available": False,
                 "total": 0,
-                "reserved": 0,
                 "allocated": 0,
                 "free": 0,
-                "utilization": 0.0
+                "utilization": 0,
+                "peak": 0
             }
-        
+
+    def _check_cuda_memory(self) -> Dict[str, Any]:
+        """Check system and GPU memory status."""
         try:
-            torch.cuda.empty_cache()
+            # Get GPU memory info
+            gpu_stats = self._get_gpu_memory()
+            
+            # Get system memory info
+            system_memory = psutil.virtual_memory()
+            
             stats = {
-                "available": True,
-                "total": torch.cuda.get_device_properties(0).total_memory,
-                "reserved": torch.cuda.memory_reserved(0),
-                "allocated": torch.cuda.memory_allocated(0),
-                "free": torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0),
-                "utilization": torch.cuda.memory_allocated(0) / torch.cuda.get_device_properties(0).total_memory * 100
+                **gpu_stats,
+                "system_total": system_memory.total,
+                "system_used": system_memory.used,
+                "system_free": system_memory.free,
+                "system_percent": system_memory.percent
             }
-            logger.debug(f"CUDA Memory Stats: {stats}")
+            
+            logger.debug(f"Memory Stats: {stats}")
             return stats
         except Exception as e:
-            logger.error(f"Error checking CUDA memory: {str(e)}")
+            logger.error(f"Error checking memory: {str(e)}")
             return {
                 "available": False,
                 "error": str(e)
@@ -367,19 +412,18 @@ class ManagerAgent:
 
     def _cleanup_gpu_memory(self) -> None:
         """Clean up GPU memory."""
-        if torch.cuda.is_available():
-            try:
-                if self._model:
-                    self._model.reset()
-                
+        try:
+            if self._model:
+                # Instead of using reset(), we'll recreate the model if needed
+                self._model = None
                 torch.cuda.empty_cache()
-                gc.collect()
-                torch.cuda.synchronize()
-                
-                logger.debug("GPU memory cleanup completed")
-                
-            except Exception as e:
-                logger.error(f"Error during GPU memory cleanup: {str(e)}")
+            
+            # Record memory stats
+            stats = self._check_cuda_memory()
+            logger.debug(f"Memory after cleanup: GPU Used={stats['allocated']/1024/1024:.2f}MB, System Used={stats['system_used']/1024/1024/1024:.2f}GB")
+            
+        except Exception as e:
+            logger.error(f"Error during memory cleanup: {str(e)}")
 
     def get_memory_stats(self) -> Dict[str, Any]:
         """Get current memory statistics"""
@@ -390,6 +434,21 @@ class ManagerAgent:
         status_counts = {status: len(self.list_tasks(status)) for status in TaskStatus}
         memory_stats = self._check_cuda_memory()
         
+        # Format recent tasks for the UI
+        recent_tasks_info = [
+            {
+                "id": task.id,
+                "type": task.task_type,
+                "status": task.status.value,
+                "input_tokens": task.input_tokens,
+                "output_tokens": task.output_tokens,
+                "execution_time": task.execution_time,
+                "created_at": task.created_at,
+                "prompt": task.prompt[:100] + "..." if task.prompt else None
+            }
+            for task in self.recent_tasks
+        ]
+        
         return {
             "active_tasks": len(self.tasks),
             "active_agents": len(self.active_agents),
@@ -399,40 +458,131 @@ class ManagerAgent:
                 "id": self.model_id,
                 "file": self.model_file
             },
-            "memory_stats": memory_stats
+            "memory_stats": memory_stats,
+            "recent_tasks": recent_tasks_info
         }
 
     async def process_task(self, prompt: str, task_type: str) -> AsyncGenerator[str, None]:
-        """Process a task with streaming response."""
+        """Process a task with streaming response and detailed memory tracking."""
+        start_time = time.time()
+        task_id = str(uuid.uuid4())
+        
+        # Create task with initial token count
+        task = Task(
+            id=task_id,
+            prompt=prompt,
+            status=TaskStatus.PROCESSING,
+            created_at=start_time,
+            task_type=task_type,
+            input_tokens=len(prompt.split())  # Simple word count for input
+        )
+        
+        self.tasks[task_id] = task
         model = await self.get_model()
+        
         try:
-            prompt_config = self._process_prompt(prompt, PromptType(task_type))
+            # Track memory before processing
+            logger.info("GPU Memory before task:")
+            memory_before = self._check_cuda_memory()
+            logger.info(f"  Used: {memory_before['allocated']/1024/1024:.2f}MB")
+            logger.info(f"  Free: {memory_before['free']/1024/1024:.2f}MB")
+            logger.info(f"  Utilization: {memory_before['utilization']:.2f}%")
+            
+            # Process the prompt
+            prompt_config = {
+                "prompt": f"[INST] {prompt} [/INST]",
+                "generation_params": {
+                    "max_new_tokens": 2048,
+                    "temperature": 0.7,
+                    "top_p": 0.9,
+                    "repetition_penalty": 1.1
+                }
+            }
+            
+            response_text = ""
+            
+            # Process task with streaming
             async for chunk in self._generate_response(model, prompt_config):
+                response_text += chunk
                 yield chunk
+            
+            # Update task with completion info
+            execution_time = time.time() - start_time
+            task.status = TaskStatus.COMPLETED
+            task.result = response_text
+            task.output_tokens = len(response_text.split())  # Simple word count for output
+            task.execution_time = execution_time
+            
+            # Add to recent tasks with memory info
+            memory_after = self._check_cuda_memory()
+            task.metadata.update({
+                "peak_memory": memory_after['peak']/1024/1024,
+                "memory_used": (memory_after['allocated'] - memory_before['allocated'])/1024/1024
+            })
+            
+            # Update recent tasks list
+            self.recent_tasks.insert(0, task)
+            self.recent_tasks = self.recent_tasks[:self.max_recent_tasks]
+            
         except Exception as e:
             logger.error(f"Error processing task: {str(e)}")
+            task.status = TaskStatus.FAILED
+            task.error = str(e)
             raise TaskProcessingError(str(e))
+        finally:
+            # Cleanup after task completion
+            self._cleanup_gpu_memory()
 
     async def _generate_response(self, model, prompt_config: Dict[str, Any]) -> AsyncGenerator[str, None]:
         """Generate response with streaming."""
         try:
-            response = ""
-            chunk_size = 8  # Adjust based on your needs
-            
-            # Get the full response first
-            full_response = model(
-                prompt_config['prompt'],
-                **prompt_config['generation_params']
-            )
-            
-            # Stream it in chunks
-            words = full_response.split()
-            for i in range(0, len(words), chunk_size):
-                chunk = " ".join(words[i:i + chunk_size])
-                response += chunk + " "
-                yield chunk + " "
-                await asyncio.sleep(0.1)  # Prevent overwhelming the frontend
+            if prompt_config['generation_params'].get('stream', False):
+                # Stream tokens directly from the model
+                current_chunk = ""
+                chunk_size = 0
+                
+                for token in model(prompt_config['prompt'], **prompt_config['generation_params']):
+                    current_chunk += token
+                    chunk_size += 1
+                    
+                    if chunk_size >= 8 or token[-1] in '.!?\n':
+                        yield current_chunk
+                        current_chunk = ""
+                        chunk_size = 0
+                        await asyncio.sleep(0.01)  # Small delay to prevent overwhelming the frontend
+                
+                if current_chunk:  # Yield any remaining tokens
+                    yield current_chunk
+            else:
+                # For non-streaming responses, get full response and return it
+                response = model(prompt_config['prompt'], **prompt_config['generation_params'])
+                yield response.strip()
                 
         except Exception as e:
             logger.error(f"Error generating response: {str(e)}")
             raise TaskProcessingError(f"Failed to generate response: {str(e)}")
+
+    def _count_tokens(self, text: str) -> int:
+        """Count tokens in text using the model's tokenizer."""
+        if not self._model or not hasattr(self._model, 'tokenize'):
+            return len(text.split())  # Fallback to word count
+        return len(self._model.tokenize(text))
+
+    def unload_model(self) -> None:
+        """Unload the model from GPU to free up memory."""
+        try:
+            if self._model:
+                # Delete the model to free GPU memory
+                del self._model
+                self._model = None
+                
+                # Clear GPU cache
+                torch.cuda.empty_cache()
+                
+                logger.info("Model successfully unloaded from GPU.")
+                
+                # Log memory stats after unloading
+                stats = self._check_cuda_memory()
+                logger.debug(f"Memory after unloading: GPU Used={stats['allocated']/1024/1024:.2f}MB, System Used={stats['system_used']/1024/1024/1024:.2f}GB")
+        except Exception as e:
+            logger.error(f"Error unloading model: {str(e)}")
