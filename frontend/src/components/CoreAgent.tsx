@@ -164,18 +164,18 @@ const CoreAgent = () => {
     if (status === 'loading') {
       return (
         <div className="mt-4 space-y-2">
-          <Alert className="bg-blue-50">
-            <Clock className="h-4 w-4 animate-spin" />
-            <AlertDescription>
+          <Alert className="bg-neutral-900/50 border border-neutral-800">
+            <Clock className="h-4 w-4 animate-spin text-neutral-200" />
+            <AlertDescription className="text-neutral-200">
               Processing... ({elapsedTime}s elapsed)
-              <div className="text-xs text-gray-500">
-                Expected duration: {taskType === 'creative' ? '~30 seconds' : '~60 seconds'}
+              <div className="text-xs text-neutral-400">
+                Expected duration: {expectedDuration}
               </div>
             </AlertDescription>
           </Alert>
-          <div className="w-full bg-gray-200 rounded-full h-2.5">
+          <div className="w-full bg-neutral-900/50 rounded-full h-2.5 border border-neutral-800">
             <div 
-              className="bg-blue-600 h-2.5 rounded-full transition-all duration-500"
+              className="bg-gradient-to-r from-neutral-200/50 via-white/50 to-neutral-300/50 h-2.5 rounded-full transition-all duration-500"
               style={{ width: `${progress}%` }}
             />
           </div>
@@ -194,9 +194,11 @@ const CoreAgent = () => {
 
     if (status === 'success') {
       return (
-        <Alert className="mt-4 bg-green-50">
-          <CheckCircle className="h-4 w-4" />
-          <AlertDescription>Completed in {elapsedTime} seconds</AlertDescription>
+        <Alert className="mt-4 bg-neutral-900/50 border border-neutral-800">
+          <CheckCircle className="h-4 w-4 text-neutral-200" />
+          <AlertDescription className="text-neutral-200">
+            Completed in {elapsedTime} seconds
+          </AlertDescription>
         </Alert>
       );
     }
@@ -233,12 +235,22 @@ const CoreAgent = () => {
                 <SelectItem value="analytical">Analytical (~60s)</SelectItem>
               </SelectContent>
             </Select>
-            <Button 
+            <Button
               onClick={handleSubmit}
-              disabled={status === 'loading' || !input.trim() || !isConnected}
-              className="w-full mt-2"
+              disabled={!isConnected || status === 'loading' || !input}
+              className="relative w-full mt-2 px-4 py-2 rounded-md font-medium bg-gradient-to-r from-neutral-200/50 via-white/50 to-neutral-300/50 hover:from-neutral-200/60 hover:via-white/60 hover:to-neutral-300/60 transition-all duration-200 before:absolute before:inset-0 before:rounded-md before:bg-[linear-gradient(var(--shine-angle,0deg),transparent_0%,rgba(255,255,255,0.25)_25%,transparent_50%)] before:opacity-0 hover:before:opacity-100 hover:before:[--shine-angle:170deg] before:transition-all before:duration-500"
             >
-              {status === 'loading' ? 'Processing...' : 'Process Task'}
+              {status === 'loading' ? (
+                <span className="flex items-center gap-2">
+                  <RefreshCcw className="w-4 h-4 animate-spin text-neutral-700" />
+                  <span className="text-neutral-700">Processing...</span>
+                </span>
+              ) : (
+                <span className="flex items-center gap-2">
+                  <Terminal className="w-4 h-4 text-neutral-700" />
+                  <span className="text-neutral-700">Process Task</span>
+                </span>
+              )}
             </Button>
           </div>
         </div>
@@ -246,8 +258,8 @@ const CoreAgent = () => {
         {renderStatus()}
 
         {response && (
-          <div className="mt-4 p-4 bg-gray-50 rounded-lg border">
-            <pre className="whitespace-pre-wrap font-mono text-sm">{response}</pre>
+          <div className="mt-4 p-4 bg-neutral-900/50 rounded-lg border border-neutral-800">
+            <pre className="whitespace-pre-wrap font-mono text-sm text-neutral-200">{response.trim()}</pre>
           </div>
         )}
 
