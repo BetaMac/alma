@@ -7,8 +7,8 @@ from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from loguru import logger
 
-from ..vector_store.store import VectorStore
-from ..vector_store.chunking import TextChunk, ChunkingStrategy
+from vector_store.store import VectorStore
+from vector_store.chunking import TextChunk, ChunkingStrategy
 
 class MemoryManager:
     """Manages agent memory using vector store for context and history."""
