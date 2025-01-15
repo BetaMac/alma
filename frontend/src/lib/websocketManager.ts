@@ -1,3 +1,6 @@
+import { config } from './config';
+import { WebSocketMessage } from './types';
+
 class WebSocketManager {
     private static instance: WebSocketManager;
     private ws: WebSocket | null = null;
@@ -19,9 +22,11 @@ class WebSocketManager {
       return WebSocketManager.instance;
     }
   
-    connect(url: string) {
+    connect(url: string = config.wsUrl) {
       if (this.isConnecting) {
-        console.log('WebSocketManager: Already attempting to connect');
+        if (config.enableDebugMode) {
+          console.log('WebSocketManager: Already attempting to connect');
+        }
         return;
       }
 
@@ -30,13 +35,17 @@ class WebSocketManager {
         this.reconnectTimeout = null;
       }
 
-      console.log('WebSocketManager: Connecting to', url);
+      if (config.enableDebugMode) {
+        console.log('WebSocketManager: Connecting to', url);
+      }
       this.url = url;
       this.isConnecting = true;
 
       try {
         if (this.ws) {
-          console.log('WebSocketManager: Closing existing connection');
+          if (config.enableDebugMode) {
+            console.log('WebSocketManager: Closing existing connection');
+          }
           this.ws.close();
           this.ws = null;
         }
@@ -113,13 +122,17 @@ class WebSocketManager {
   
     private startHeartbeat() {
       this.stopHeartbeat();
-      console.log('WebSocketManager: Starting heartbeat');
+      if (config.enableDebugMode) {
+        console.log('WebSocketManager: Starting heartbeat');
+      }
       this.heartbeatInterval = setInterval(() => {
         if (this.ws?.readyState === WebSocket.OPEN) {
-          console.log('WebSocketManager: Sending ping');
+          if (config.enableDebugMode) {
+            console.log('WebSocketManager: Sending ping');
+          }
           this.ws.send('ping');
         }
-      }, 30000);
+      }, config.defaultTimeout * 1000);  // Convert to milliseconds
     }
   
     private stopHeartbeat() {

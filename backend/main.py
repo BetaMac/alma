@@ -10,9 +10,10 @@ import logging
 from datetime import datetime
 import os
 from starlette.websockets import WebSocketState
+from config import config, Settings
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO if not config.DEBUG else logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # WebSocket connections store
@@ -31,21 +32,10 @@ class TaskResponse(BaseModel):
 
 app = FastAPI()
 
-# Configure CORS with all necessary origins
-origins = [
-    "http://localhost:3000",
-    "http://localhost:8000",
-    "http://127.0.0.1:3000",
-    "http://127.0.0.1:8000",
-    "ws://localhost:3000",
-    "ws://localhost:8000",
-    "ws://127.0.0.1:3000",
-    "ws://127.0.0.1:8000"
-]
-
+# Configure CORS with settings from config
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=config.ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -185,14 +175,14 @@ if __name__ == "__main__":
     try:
         uvicorn.run(
             app,
-            host="127.0.0.1",
-            port=8000,
-            log_level="info",
-            ws_ping_interval=30,
+            host=config.HOST,
+            port=config.PORT,
+            log_level="debug" if config.DEBUG else "info",
+            ws_ping_interval=config.WS_HEARTBEAT_INTERVAL,
             ws_ping_timeout=10,
             timeout_keep_alive=30
         )
     except Exception as e:
-        print(f"Failed to start server: {e}")
+        logger.error(f"Failed to start server: {e}")
         import sys
         sys.exit(1)
