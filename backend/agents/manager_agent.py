@@ -16,6 +16,7 @@ from pathlib import Path
 import psutil
 import subprocess
 import json
+from .memory_manager import MemoryManager
 
 class ManagerAgentError(Exception):
     """Base exception class for Manager Agent errors"""
@@ -111,6 +112,7 @@ class ManagerAgent:
             self._initialized = True
             self.recent_tasks: List[Task] = []  # Keep track of recent tasks
             self.max_recent_tasks = 10  # Maximum number of recent tasks to store
+            self.memory_manager = MemoryManager()  # Initialize memory manager
 
     async def get_model(self):
         """Get or initialize the model with thread safety."""
@@ -186,16 +188,26 @@ class ManagerAgent:
         if task.status not in TaskStatus:
             raise TaskValidationError(f"Invalid task status: {task.status}")
 
-    def _process_prompt(self, prompt: str, task_type: PromptType) -> Dict[str, Any]:
+    async def _process_prompt(self, prompt: str, task_type: PromptType, task_id: str) -> Dict[str, Any]:
         """Process and validate prompt based on task type."""
         try:
+            # Get relevant context from memory
+            context_items = await self.memory_manager.get_relevant_context(prompt)
+            context_summary = await self.memory_manager.summarize_context(context_items)
+            
+            # Build prompt with context
+            if context_summary:
+                enhanced_prompt = f"{context_summary}\n\nCurrent request:\n{prompt}"
+            else:
+                enhanced_prompt = prompt
+            
             if task_type == PromptType.CREATIVE:
-                return build_creative_prompt(prompt)
+                return build_creative_prompt(enhanced_prompt)
             elif task_type == PromptType.ANALYTICAL:
-                return build_analytical_prompt(prompt)
+                return build_analytical_prompt(enhanced_prompt)
             else:
                 return {
-                    "prompt": f"{prompt}",
+                    "prompt": enhanced_prompt,
                     "generation_params": {
                         "max_new_tokens": 1024,
                         "temperature": 0.7,
