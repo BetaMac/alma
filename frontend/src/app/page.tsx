@@ -1,7 +1,8 @@
+'use client'
 import dynamic from 'next/dynamic'
 
 const CoreAgent = dynamic(() => import('../components/CoreAgent'), {
-  ssr: false
+  loading: () => <div>Loading...</div>
 })
 
 export default function Home() {

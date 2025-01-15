@@ -7,10 +7,10 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { AlertCircle, Clock, CheckCircle, RefreshCcw, Terminal } from 'lucide-react';
-import { useWebSocket, WebSocketMessage } from '@/hooks/useWebSocket';
+import { useWebSocket } from '@/hooks/useWebSocket';
 import { wsManager } from '@/lib/websocketManager';
+import { WebSocketMessage } from '@/lib/types';
 import { PerformanceMonitor } from './PerformanceMonitor';
-// Removed the import for Progress due to the error
 
 const CoreAgent = () => {
   const [input, setInput] = useState('');
@@ -39,28 +39,28 @@ const CoreAgent = () => {
     return () => clearInterval(timer);
   }, [status, taskType]);
   // Initialize WebSocket connection with enhanced handlers
-  const { isConnected, sendMessage } = useWebSocket(process.env.NEXT_PUBLIC_WS_URL || 'ws://127.0.0.1:8000/', {
+  const { isConnected, sendMessage } = useWebSocket(process.env.NEXT_PUBLIC_WS_URL || 'ws://127.0.0.1:8000/ws', {
     onOpen: () => {
       console.log('Connected to agent backend');
       setError('');
       setIsReconnecting(false);
       setReconnectAttempts(0);
     },
-    onClose: () => {
-      console.log('WebSocket connection closed');
+    onClose: (event) => {
+      console.log('WebSocket connection closed with code:', event?.code);
       if (!isReconnecting) {
         setIsReconnecting(true);
         setReconnectAttempts(prev => prev + 1);
-        if (reconnectAttempts < 3) {
-          handleReconnect();
-        } else {
-          setError('Connection lost after multiple attempts. Please refresh the page.');
-        }
+        setError('Connection lost. Attempting to reconnect...');
       }
     },
     onMessage: (message: WebSocketMessage) => {
       try {
+        console.log('Received message:', message);
         switch (message.status) {
+          case 'connected':
+            setError('');
+            break;
           case 'processing':
             setStatus('loading');
             break;
@@ -90,7 +90,6 @@ const CoreAgent = () => {
       console.error('WebSocket error:', event);
       setError('Connection error occurred. Check if the backend server is running.');
       setStatus('error');
-      handleReconnect();
     }
   });
 
@@ -118,17 +117,7 @@ const CoreAgent = () => {
         timestamp: new Date().toISOString()
       };
 
-      const response = await fetch('http://127.0.0.1:8000/api/agent/process', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(taskData)
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Failed to initiate task');
-      }
-
+      // Send directly through WebSocket instead of making HTTP request first
       sendMessage(taskData);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');

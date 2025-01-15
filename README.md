@@ -22,18 +22,46 @@ A hierarchical AI agent system for learning and development, starting with a cor
 
 ## Quick Start
 
+### Backend Setup
 ```bash
-# Backend setup
+# Create and activate virtual environment
 cd backend
 python -m venv venv
-source venv/bin/activate  # or `venv\Scripts\activate` on Windows
-pip install -r requirements.txt
+source venv/bin/activate  # Linux/Mac
+# or
+.\venv\Scripts\activate  # Windows
 
-# Frontend setup
+# Upgrade pip to latest version
+python -m pip install --upgrade pip
+
+# Install PyTorch with CUDA support first (critical for other dependencies)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Install remaining dependencies
+pip install -r requirements.txt
+```
+
+### Important Notes on Dependencies
+- PyTorch must be installed first with CUDA support
+- The order of installation matters due to interdependencies
+- If you encounter any issues:
+  1. Ensure your virtual environment is clean (remove and recreate if necessary)
+  2. Upgrade pip to the latest version
+  3. Install PyTorch with CUDA support before other packages
+  4. Install remaining requirements
+
+### Frontend Setup
+```bash
 cd ../frontend
 npm install
 npm run dev
 ```
+
+### System Requirements
+- NVIDIA GPU with CUDA support
+- Python 3.10 or higher
+- Node.js 18.17 or higher
+- npm 9.6.7 or higher
 
 ## Project Structure
 

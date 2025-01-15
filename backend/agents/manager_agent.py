@@ -109,17 +109,13 @@ class ManagerAgent:
             self.default_timeout = default_timeout
             self.max_memory_percent = max_memory_percent
             self._initialized = True
-            if self._model is None:
-                self._initialize_model()
             self.recent_tasks: List[Task] = []  # Keep track of recent tasks
             self.max_recent_tasks = 10  # Maximum number of recent tasks to store
 
     async def get_model(self):
         """Get or initialize the model with thread safety."""
-        async with self._model_lock:
-            if self._model is None:
-                self._initialize_model()
-            return self._model
+        # Don't automatically initialize
+        return self._model
 
     def _initialize_model(self):
         """Initialize the Mistral model with caching."""
@@ -456,7 +452,8 @@ class ManagerAgent:
             "task_statistics": status_counts,
             "model_info": {
                 "id": self.model_id,
-                "file": self.model_file
+                "file": self.model_file,
+                "loaded": self._model is not None
             },
             "memory_stats": memory_stats,
             "recent_tasks": recent_tasks_info
