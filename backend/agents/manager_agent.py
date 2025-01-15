@@ -464,15 +464,19 @@ class ManagerAgent:
         start_time = time.time()
         task_id = str(uuid.uuid4())
         
-        # Create task with initial token count
+        # Create task with accurate token count
+        input_tokens = self._count_tokens(prompt)
         task = Task(
             id=task_id,
             prompt=prompt,
             status=TaskStatus.PROCESSING,
             created_at=start_time,
             task_type=task_type,
-            input_tokens=len(prompt.split())  # Simple word count for input
+            input_tokens=input_tokens
         )
+        
+        # Calculate max tokens based on input length
+        max_new_tokens = min(4096, max(512, input_tokens * 2))  # Dynamic token limit
         
         self.tasks[task_id] = task
         model = await self.get_model()
@@ -485,37 +489,40 @@ class ManagerAgent:
             logger.info(f"  Free: {memory_before['free']/1024/1024:.2f}MB")
             logger.info(f"  Utilization: {memory_before['utilization']:.2f}%")
             
-            # Process the prompt with increased token limit
+            # Process the prompt with dynamic token limit
             prompt_config = {
                 "prompt": f"[INST] {prompt} [/INST]",
                 "generation_params": {
-                    "max_new_tokens": 4096,  # Increased from 2048
+                    "max_new_tokens": max_new_tokens,
                     "temperature": 0.7,
                     "top_p": 0.9,
                     "repetition_penalty": 1.1,
-                    "stream": True  # Enable streaming by default
+                    "stream": True
                 }
             }
             
             response_text = ""
+            output_tokens = 0
             
-            # Process task with streaming
+            # Process task with streaming and token counting
             async for chunk in self._generate_response(model, prompt_config):
                 response_text += chunk
+                output_tokens += self._count_tokens(chunk)
                 yield chunk
             
             # Update task with completion info
             execution_time = time.time() - start_time
             task.status = TaskStatus.COMPLETED
             task.result = response_text
-            task.output_tokens = len(response_text.split())  # Simple word count for output
+            task.output_tokens = output_tokens  # Use accurate token count
             task.execution_time = execution_time
             
             # Add to recent tasks with memory info
             memory_after = self._check_cuda_memory()
             task.metadata.update({
                 "peak_memory": memory_after['peak']/1024/1024,
-                "memory_used": (memory_after['allocated'] - memory_before['allocated'])/1024/1024
+                "memory_used": (memory_after['allocated'] - memory_before['allocated'])/1024/1024,
+                "tokens_per_second": output_tokens / execution_time if execution_time > 0 else 0
             })
             
             # Update recent tasks list
@@ -532,22 +539,60 @@ class ManagerAgent:
             self._cleanup_gpu_memory()
 
     async def _generate_response(self, model, prompt_config: Dict[str, Any]) -> AsyncGenerator[str, None]:
-        """Generate response with streaming."""
+        """Generate response with streaming and adaptive buffering."""
         try:
             current_chunk = ""
             chunk_size = 0
-            buffer_size = 16  # Increased buffer size for smoother streaming
+            total_tokens = 0
+            last_yield_time = time.time()
+            
+            # Adaptive buffer settings
+            min_buffer_size = 8
+            max_buffer_size = 32
+            current_buffer_size = min_buffer_size
+            min_chunk_interval = 0.05  # Minimum time between chunks in seconds
+            
+            # Token processing settings
+            natural_breaks = {'.', '!', '?', '\n', ',', ';', ':'}
+            strong_breaks = {'.', '!', '?', '\n'}
             
             for token in model(prompt_config['prompt'], **prompt_config['generation_params']):
                 current_chunk += token
                 chunk_size += 1
+                total_tokens += 1
                 
-                # Yield chunks on natural breaks or when buffer is full
-                if chunk_size >= buffer_size or any(p in token for p in '.!?\n'):
+                current_time = time.time()
+                time_since_last_yield = current_time - last_yield_time
+                
+                # Determine if we should yield based on multiple factors
+                should_yield = False
+                
+                # Check for natural breaks
+                if any(p in token for p in strong_breaks):
+                    should_yield = True
+                elif chunk_size >= current_buffer_size:
+                    should_yield = True
+                elif time_since_last_yield >= min_chunk_interval and any(p in token for p in natural_breaks):
+                    should_yield = True
+                
+                if should_yield:
                     yield current_chunk
+                    
+                    # Adapt buffer size based on token generation speed
+                    tokens_per_second = chunk_size / time_since_last_yield if time_since_last_yield > 0 else 0
+                    if tokens_per_second > 50:  # Fast generation
+                        current_buffer_size = min(current_buffer_size + 2, max_buffer_size)
+                    elif tokens_per_second < 20:  # Slow generation
+                        current_buffer_size = max(current_buffer_size - 1, min_buffer_size)
+                    
+                    # Reset chunk tracking
                     current_chunk = ""
                     chunk_size = 0
-                    await asyncio.sleep(0.01)  # Small delay to prevent overwhelming the frontend
+                    last_yield_time = current_time
+                    
+                    # Adaptive delay based on buffer size
+                    delay = max(0.01, min(0.05, 1 / tokens_per_second if tokens_per_second > 0 else 0.05))
+                    await asyncio.sleep(delay)
             
             # Yield any remaining tokens
             if current_chunk:
@@ -559,9 +604,23 @@ class ManagerAgent:
 
     def _count_tokens(self, text: str) -> int:
         """Count tokens in text using the model's tokenizer."""
-        if not self._model or not hasattr(self._model, 'tokenize'):
+        try:
+            # Use cached tokenizer if available
+            if hasattr(self, '_tokenizer'):
+                return len(self._tokenizer.encode(text))
+            
+            # Initialize tokenizer if not available
+            if not hasattr(self, '_tokenizer'):
+                from transformers import AutoTokenizer
+                self._tokenizer = AutoTokenizer.from_pretrained(
+                    self.model_id,
+                    use_fast=True,
+                    local_files_only=True
+                )
+            return len(self._tokenizer.encode(text))
+        except Exception as e:
+            logger.warning(f"Error in token counting: {str(e)}, falling back to word count")
             return len(text.split())  # Fallback to word count
-        return len(self._model.tokenize(text))
 
     def unload_model(self) -> None:
         """Unload the model from GPU to free up memory."""
