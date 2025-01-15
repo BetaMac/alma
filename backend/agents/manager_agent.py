@@ -197,23 +197,41 @@ class ManagerAgent:
             
             # Build prompt with context
             if context_summary:
-                enhanced_prompt = f"{context_summary}\n\nCurrent request:\n{prompt}"
+                enhanced_prompt = f"[INST] Previous context:\n{context_summary}\n\nCurrent request: {prompt} [/INST]"
             else:
-                enhanced_prompt = prompt
+                enhanced_prompt = f"[INST] {prompt} [/INST]"
             
+            # Add generation parameters based on task type
             if task_type == PromptType.CREATIVE:
-                return build_creative_prompt(enhanced_prompt)
-            elif task_type == PromptType.ANALYTICAL:
-                return build_analytical_prompt(enhanced_prompt)
-            else:
-                return {
-                    "prompt": enhanced_prompt,
-                    "generation_params": {
-                        "max_new_tokens": 1024,
-                        "temperature": 0.7,
-                        "top_p": 0.95
-                    }
+                params = {
+                    "max_new_tokens": 1024,
+                    "temperature": 0.8,
+                    "top_p": 0.95,
+                    "repetition_penalty": 1.1,
+                    "stream": True
                 }
+            elif task_type == PromptType.ANALYTICAL:
+                params = {
+                    "max_new_tokens": 2048,
+                    "temperature": 0.7,
+                    "top_p": 0.9,
+                    "repetition_penalty": 1.2,
+                    "stream": True
+                }
+            else:  # CONVERSATIONAL
+                params = {
+                    "max_new_tokens": 1024,
+                    "temperature": 0.7,
+                    "top_p": 0.9,
+                    "repetition_penalty": 1.1,
+                    "stream": True
+                }
+            
+            return {
+                "prompt": enhanced_prompt,
+                "generation_params": params
+            }
+            
         except Exception as e:
             logger.error(f"Prompt processing error: {str(e)}")
             raise InvalidPromptError(f"Failed to process prompt: {str(e)}")
@@ -501,17 +519,8 @@ class ManagerAgent:
             logger.info(f"  Free: {memory_before['free']/1024/1024:.2f}MB")
             logger.info(f"  Utilization: {memory_before['utilization']:.2f}%")
             
-            # Process the prompt with dynamic token limit
-            prompt_config = {
-                "prompt": f"[INST] {prompt} [/INST]",
-                "generation_params": {
-                    "max_new_tokens": max_new_tokens,
-                    "temperature": 0.7,
-                    "top_p": 0.9,
-                    "repetition_penalty": 1.1,
-                    "stream": True
-                }
-            }
+            # Process the prompt with context
+            prompt_config = await self._process_prompt(prompt, task_type, task_id)
             
             response_text = ""
             output_tokens = 0
@@ -528,6 +537,19 @@ class ManagerAgent:
             task.result = response_text
             task.output_tokens = output_tokens  # Use accurate token count
             task.execution_time = execution_time
+            
+            # Store interaction in memory
+            await self.memory_manager.add_interaction(
+                prompt=prompt,
+                response=response_text,
+                task_id=task_id,
+                metadata={
+                    "type": task_type,
+                    "execution_time": execution_time,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens
+                }
+            )
             
             # Add to recent tasks with memory info
             memory_after = self._check_cuda_memory()
